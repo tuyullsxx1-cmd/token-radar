@@ -7,25 +7,44 @@
 // kept apart and shown with the market's own values, never mixed into the ranked board.
 //
 // Implied value is FITTED, not assumed. The traded tokens inside the snapshot itself are the
-// comps: an ordinary least squares fit of log(market cap) on log(TVL) over the 128 protocols
-// that record both. The fit is recomputed from the snapshot on every run, so the curve is the
-// snapshot's own, never a hand-kept number:
+// comps — but only the ones that record a market cap of at least $1M. The 18 traded tokens below
+// $1M are dead listings (market caps of $48k-$889k), not markets: including them as comps drags
+// the curve down and inflates the spread, and leave-one-out proves it (median miss x3.40 with
+// them, x2.79 without). The floor is a stated rule on the snapshot's own figures, applied at
+// runtime, never a list of names; the page shows both numbers. The fit is an ordinary least
+// squares of log(market cap) on log(TVL) over the 110 remaining comps, recomputed from the
+// snapshot on every run, so the curve is the snapshot's own, never a hand-kept number:
 //
-//   log(mcap) = a + b * log(tvl)          (fitted; this snapshot: a ~ 6.97, b ~ 0.52)
+//   log(mcap) = a + b * log(tvl)          (fitted; this snapshot: a ~ 9.29, b ~ 0.42)
 //   implied   = exp(a + b * log(tvl))
 //   p10, p90  = implied * exp(-/+ 1.2816 * sigma)   (the 80% prediction interval)
 //
-// The spread is wide because the comps are: the curve is validated leave-one-out and the honest
-// numbers are shown on the page. Growth and age tilts, category shrinkage and winsorising were
-// all tried and all made the out-of-sample miss WORSE, so the value curve uses TVL alone; growth
-// and age instead feed the launch-odds prior, which is stated, not fitted, because the snapshot
-// carries no launch outcomes to fit on.
+// sigma is the ROBUST spread: the median absolute deviation of the residuals, scaled to a
+// standard deviation. The ordinary residual standard deviation is inflated by a few extreme
+// tokens (one token's market cap is 400x its TVL), which is why the first version's range
+// spanned x214; the robust scale gives an 80% interval of about x58 that still holds 80% of
+// comps blind. The interval is calibrated leave-one-out: the page shows the honest numbers.
 //
-// Launch odds are a stated prior, a logistic in size, growth and age:
+// Growth and age tilts and a quadratic term were all tried and all made the out-of-sample
+// miss WORSE, so the value curve uses TVL alone. A category adjustment scores marginally
+// better blind (median miss x2.77 vs x2.79) but is NOT used: its adjustments rest on 1-9
+// comps per category, and one prediction-market token worth 400x its TVL would multiply
+// every Prediction Market protocol's implied value by 2.6x and reshuffle 190 of 197 ranks.
+// A board driven by single outliers is not a ranking. The curve is validated leave-one-out
+// and the honest numbers are shown on the page, including the rejected variants.
 //
-//   z    = -0.9 + 0.45 * (ln(tvl) - 18.5) + 0.5 * clamp(growth, -30, 60) / 60
-//          + 0.25 * min(age_days, 1095) / 1095
+// Launch odds are FITTED, not stated. The snapshot does carry launch outcomes in one sense:
+// which of its 758 protocols record a token and which do not. A logistic regression over all
+// of them, P(records a token) by how long the protocol has run, is the odds model:
+//
+//   z    = -1.74 + 1.11 * (ln(age_days + 1) - 6.5) / 1.5     (+0.82 when age is unknown)
 //   odds = 1 / (1 + exp(-z))
+//
+// The coefficients are fitted from the snapshot on every run. TVL and 7-day growth carry no
+// signal for whether a protocol has a token (5-fold AUC 0.44 and 0.58 alone), so they are not
+// in the odds; age alone reaches 5-fold Brier 0.134 and AUC 0.67, against Brier 0.176 for the
+// stated prior it replaces. The odds are a base rate from the snapshot's own record, not a
+// dated forecast: no probability here claims a launch date.
 //
 // A farm's expected value, at a deposit D and a drop share s, is
 //
@@ -64,7 +83,9 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-/** The fitted comps curve: intercept, slope and residual spread in log space. */
+/** The fitted comps curve: intercept, slope and residual spread in log space.
+ *  `sigma` is the ROBUST spread (median absolute deviation of the residuals, scaled to a
+ *  standard deviation): the ordinary residual SD is inflated by a few extreme tokens. */
 export interface CurveFit {
   intercept: number;
   slope: number;
@@ -90,28 +111,31 @@ export interface Validation {
   variants: ValidationVariant[];
 }
 
-/** The launch-odds prior's constants, as the dashboard states them. */
-export interface OddsPrior {
+/** The launch-odds model: a logistic regression fitted from the snapshot on every run.
+ *  P(records a token) by how long the protocol has run: z = intercept + age_coef *
+ *  (ln(age_days + 1) - age_centre) / age_scale, plus null_coef when the listing date is
+ *  unknown. `brier` / `auc` are the 5-fold cross-validated scores; `prior_brier` is the
+ *  stated prior this model replaces, scored on the same 758 protocols. */
+export interface OddsModel {
   intercept: number;
-  size_weight: number;
-  size_centre: number;
-  growth_weight: number;
-  growth_floor: number;
-  growth_cap: number;
-  age_weight: number;
-  age_days: number;
+  age_centre: number;
+  age_scale: number;
+  age_coef: number;
+  null_coef: number;
+  brier: number;
+  auc: number;
+  prior_brier: number;
+  protocols: number;
 }
 
-export const ODDS: OddsPrior = {
-  intercept: -0.9,
-  size_weight: 0.45,
-  size_centre: 18.5,
-  growth_weight: 0.5,
-  growth_floor: -30,
-  growth_cap: 60,
-  age_weight: 0.25,
-  age_days: 1095,
-};
+/** The age standardisation of the odds fit: ln(age_days + 1) is centred and scaled so the
+ *  gradient descent converges. */
+export const ODDS_AGE_CENTRE = 6.5;
+export const ODDS_AGE_SCALE = 1.5;
+
+/** A comp must record a market cap of at least $1M: below that the token is a dead listing,
+ *  not a market, and it is not a comp for valuing a launch. */
+export const MIN_COMP_MCAP_USD = 1_000_000;
 
 /** The farm economics' constants, as the dashboard states them. */
 export const FARM: { farmer_share: number; tx_count: number; farm_net: number; marginal_net: number } = {
@@ -122,7 +146,7 @@ export const FARM: { farmer_share: number; tx_count: number; farm_net: number; m
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'comps-2';
+export const MODEL_VERSION = 'comps-3';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -204,7 +228,7 @@ export interface RadarData {
   model_version: string;
   curve: CurveFit;
   validation: Validation;
-  odds: OddsPrior;
+  odds: OddsModel;
   farm: typeof FARM;
   watchlist_size: number;
   board_size: number;
@@ -275,8 +299,29 @@ export function ols(design: number[][], target: number[]): number[] {
   return b.map((v, i) => v / a[i]![i]!);
 }
 
-/** The comps: protocols that record both a market cap and a TVL. */
+/** The median of a list of numbers. */
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)]!;
+}
+
+/** A robust scale: the median absolute deviation, scaled to a standard deviation.
+ *  A few extreme tokens cannot inflate it the way they inflate the ordinary SD. */
+function madSigma(residuals: number[]): number {
+  const med = median(residuals);
+  return 1.4826 * median(residuals.map((r) => Math.abs(r - med)));
+}
+
+/** The comps: protocols that record a market cap of at least $1M and a TVL. The floor is
+ *  the quality rule: a token under $1M of market cap is a dead listing, not a market, and
+ *  its price tells nothing about what a new token is worth. */
 function compsOf(snapshot: Snapshot): SnapshotProtocol[] {
+  return snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd >= MIN_COMP_MCAP_USD && p.tvl_usd > 0);
+}
+
+/** Every protocol that records any market cap at all, floor or not: the dust-included
+ *  variant the validation panel shows, so the floor's effect is not hidden. */
+function compsOfAll(snapshot: Snapshot): SnapshotProtocol[] {
   return snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
 }
 
@@ -293,8 +338,9 @@ function features(p: SnapshotProtocol, asOf: string, kind: string): number[] {
   return row;
 }
 
-/** Leave-one-out validation of one feature set over the comps. */
-function looValidate(comps: SnapshotProtocol[], asOf: string, kind: string): ValidationVariant {
+/** Leave-one-out validation of one feature set over the comps. The hold is judged against
+ *  the robust (MAD) scale of each fold's residuals. */
+function looValidate(comps: SnapshotProtocol[], asOf: string, kind: string, label?: string): ValidationVariant {
   const errs: number[] = [];
   let held = 0;
   for (let i = 0; i < comps.length; i++) {
@@ -303,7 +349,9 @@ function looValidate(comps: SnapshotProtocol[], asOf: string, kind: string): Val
     const target = sub.map((p) => Math.log(p.mcap_usd!));
     const beta = ols(design, target);
     const resid = sub.map((p, j) => target[j]! - design[j]!.reduce((acc, v, k) => acc + v * beta[k]!, 0));
-    const sigma = Math.sqrt(resid.reduce((acc, r) => acc + r * r, 0) / (sub.length - design[0]!.length));
+    // The hold is judged against the ROBUST scale, so a few extreme tokens cannot
+    // inflate the interval the way the ordinary SD did (x214 in comps-2).
+    const sigma = madSigma(resid);
     const pred = features(comps[i]!, asOf, kind).reduce((acc, v, k) => acc + v * beta[k]!, 0);
     const err = Math.log(comps[i]!.mcap_usd!) - pred;
     errs.push(Math.abs(err));
@@ -317,7 +365,7 @@ function looValidate(comps: SnapshotProtocol[], asOf: string, kind: string): Val
     'growth-age': 'TVL + growth + age',
   };
   return {
-    name: names[kind] ?? kind,
+    name: label ?? names[kind] ?? kind,
     median_log_err: Math.round(median * 1000) / 1000,
     median_factor: Math.round(Math.exp(median) * 100) / 100,
     mean_log_err: Math.round((errs.reduce((a, b) => a + b, 0) / errs.length) * 1000) / 1000,
@@ -335,7 +383,7 @@ function looValidateCategory(comps: SnapshotProtocol[], asOf: string): Validatio
     const target = sub.map((p) => Math.log(p.mcap_usd!));
     const beta = ols(design, target);
     const resid = sub.map((p, j) => target[j]! - (beta[0]! + beta[1]! * Math.log(p.tvl_usd)));
-    const sigma = Math.sqrt(resid.reduce((acc, r) => acc + r * r, 0) / (sub.length - 2));
+    const sigma = madSigma(resid);
     const byCat = new Map<string, number[]>();
     sub.forEach((p, j) => {
       const key = p.category ?? 'Other';
@@ -361,7 +409,8 @@ function looValidateCategory(comps: SnapshotProtocol[], asOf: string): Validatio
   };
 }
 
-/** Fit the comps curve and validate every variant; the TVL-only curve wins on the miss. */
+/** Fit the comps curve and validate every variant; the TVL-only curve on the $1M-floored
+ *  comps wins on the miss, and its range is the robust one. */
 export function fitCurve(snapshot: Snapshot): { curve: CurveFit; validation: Validation } {
   const comps = compsOf(snapshot);
   if (comps.length < 10) throw new SnapshotError(`only ${comps.length} traded comps: the curve cannot be fitted`);
@@ -369,7 +418,7 @@ export function fitCurve(snapshot: Snapshot): { curve: CurveFit; validation: Val
   const target = comps.map((p) => Math.log(p.mcap_usd!));
   const beta = ols(design, target);
   const resid = comps.map((p, j) => target[j]! - (beta[0]! + beta[1]! * Math.log(p.tvl_usd)));
-  const sigma = Math.sqrt(resid.reduce((acc, r) => acc + r * r, 0) / (comps.length - 2));
+  const sigma = madSigma(resid);
   const curve: CurveFit = {
     intercept: Math.round(beta[0]! * 1000) / 1000,
     slope: Math.round(beta[1]! * 1000) / 1000,
@@ -377,13 +426,14 @@ export function fitCurve(snapshot: Snapshot): { curve: CurveFit; validation: Val
     comps: comps.length,
   };
   const variants = [
-    looValidate(comps, snapshot.as_of, 'tvl'),
+    looValidate(comps, snapshot.as_of, 'tvl', 'TVL curve only (mcap >= $1M)'),
     looValidate(comps, snapshot.as_of, 'growth'),
     looValidate(comps, snapshot.as_of, 'growth-age'),
     looValidateCategory(comps, snapshot.as_of),
+    looValidate(compsOfAll(snapshot), snapshot.as_of, 'tvl', 'TVL curve, all 128 comps (incl. dust)'),
   ];
   const validation: Validation = {
-    chosen: 'TVL curve only',
+    chosen: 'TVL curve only (mcap >= $1M)',
     comps: comps.length,
     sigma: curve.sigma,
     range_factor: Math.round(Math.exp(2 * Z80 * sigma) * 10) / 10,
@@ -403,17 +453,117 @@ export function curveValue(tvlUsd: number, curve: CurveFit): { implied: number; 
   };
 }
 
-/** The launch-odds prior: a stated logistic in size, growth and age. */
-export function launchOdds(p: SnapshotProtocol, asOf: string): number {
+/** The logistic function, with the exponent clamped so no age overflows it. */
+function sigmoid(z: number): number {
+  return 1 / (1 + Math.exp(-Math.min(30, Math.max(-30, z))));
+}
+
+/** One protocol's odds features: [1, standardised log age, age unknown]. Age is the only
+ *  signal: TVL and 7-day growth do not predict whether a protocol records a token. */
+function oddsFeatures(p: SnapshotProtocol, asOf: string): number[] {
   const age = ageDays(asOf, p.listed_at);
-  const growth = Math.min(ODDS.growth_cap, Math.max(ODDS.growth_floor, finite(p.change_7d, 0)));
+  if (age === null) return [1, 0, 1];
+  return [1, (Math.log(age + 1) - ODDS_AGE_CENTRE) / ODDS_AGE_SCALE, 0];
+}
+
+/** A logistic regression by gradient descent, run to convergence (deterministic: fixed
+ *  step, fixed penalty, no randomness). Returns [intercept, age_coef, null_coef]. */
+function fitLogistic(rows: { features: number[]; label: number }[]): number[] {
+  const beta = [0, 0, 0];
+  const positives = rows.reduce((acc, r) => acc + r.label, 0);
+  beta[0] = Math.log(positives / Math.max(1, rows.length - positives));
+  const step = 0.5;
+  const penalty = 1;
+  for (let iter = 0; iter < 20000; iter++) {
+    const grad = [0, 0, 0];
+    for (const r of rows) {
+      const pr = sigmoid(r.features.reduce((acc, v, k) => acc + v * beta[k]!, 0));
+      for (let k = 0; k < 3; k++) grad[k]! += (pr - r.label) * r.features[k]!;
+    }
+    let delta = 0;
+    for (let k = 0; k < 3; k++) {
+      const g = grad[k]! / rows.length + (k === 0 ? 0 : (penalty / rows.length) * beta[k]!);
+      const next = beta[k]! - step * g;
+      delta = Math.max(delta, Math.abs(next - beta[k]!));
+      beta[k] = next;
+    }
+    if (delta < 1e-10) break;
+  }
+  return beta;
+}
+
+/** The round-1 stated prior, kept only to score it against the fitted odds on the same
+ *  protocols: a prior that cannot be beaten by its own data is not a model. */
+function statedPriorOdds(p: SnapshotProtocol, asOf: string): number {
+  const age = ageDays(asOf, p.listed_at);
+  const growth = Math.min(60, Math.max(-30, finite(p.change_7d, 0)));
   const z =
-    ODDS.intercept +
-    ODDS.size_weight * (Math.log(p.tvl_usd) - ODDS.size_centre) +
-    ODDS.growth_weight * (growth / 60) +
-    ODDS.age_weight * (Math.min(age ?? 365, ODDS.age_days) / ODDS.age_days);
-  const odds = 1 / (1 + Math.exp(-z));
-  return Math.round(odds * 1000) / 1000;
+    -0.9 +
+    0.45 * (Math.log(p.tvl_usd) - 18.5) +
+    0.5 * (growth / 60) +
+    0.25 * (Math.min(age ?? 365, 1095) / 1095);
+  return sigmoid(z);
+}
+
+/** The area under the ROC curve of scored probabilities against binary labels. */
+function aucScore(predicted: number[], labels: number[]): number {
+  const positives = predicted.filter((_, i) => labels[i] === 1);
+  const negatives = predicted.filter((_, i) => labels[i] === 0);
+  if (positives.length === 0 || negatives.length === 0) return 0.5;
+  let wins = 0;
+  for (const p of positives) {
+    for (const q of negatives) {
+      if (p > q) wins += 1;
+      else if (p === q) wins += 0.5;
+    }
+  }
+  return wins / (positives.length * negatives.length);
+}
+
+/** Fit the launch-odds model on the snapshot and score it 5-fold, against the stated
+ *  prior it replaces. Folds are by index, so the score is deterministic. The label is
+ *  "records a token with a measurable market": a market cap above zero. The 15 protocols
+ *  whose token records a $0 market cap count as no market — a dead listing is not a launch
+ *  a farmer can profit from, and the implied value assumes a traded token. */
+export function fitOdds(snapshot: Snapshot): OddsModel {
+  const rows = snapshot.protocols.map((p) => ({ features: oddsFeatures(p, snapshot.as_of), label: p.mcap_usd !== null && p.mcap_usd > 0 ? 1 : 0 }));
+  const beta = fitLogistic(rows);
+  let brier = 0;
+  let auc = 0;
+  const folds = 5;
+  for (let fold = 0; fold < folds; fold++) {
+    const train = rows.filter((_, i) => i % folds !== fold);
+    const test = rows.filter((_, i) => i % folds === fold);
+    const foldBeta = fitLogistic(train);
+    const predicted = test.map((r) => sigmoid(r.features.reduce((acc, v, k) => acc + v * foldBeta[k]!, 0)));
+    brier += predicted.reduce((acc, pr, i) => acc + (pr - test[i]!.label) ** 2, 0) / test.length;
+    auc += aucScore(predicted, test.map((r) => r.label));
+  }
+  const priorBrier =
+    snapshot.protocols.reduce((acc, p) => acc + (statedPriorOdds(p, snapshot.as_of) - (p.mcap_usd !== null && p.mcap_usd > 0 ? 1 : 0)) ** 2, 0) /
+    snapshot.protocols.length;
+  return {
+    intercept: Math.round(beta[0]! * 1000) / 1000,
+    age_centre: ODDS_AGE_CENTRE,
+    age_scale: ODDS_AGE_SCALE,
+    age_coef: Math.round(beta[1]! * 1000) / 1000,
+    null_coef: Math.round(beta[2]! * 1000) / 1000,
+    brier: Math.round((brier / folds) * 1000) / 1000,
+    auc: Math.round((auc / folds) * 1000) / 1000,
+    prior_brier: Math.round(priorBrier * 1000) / 1000,
+    protocols: snapshot.protocols.length,
+  };
+}
+
+/** The launch odds: the fitted logistic's P(records a token) for a protocol of this age.
+ *  A base rate from the snapshot's own record, not a dated forecast. */
+export function launchOdds(p: SnapshotProtocol, asOf: string, odds: OddsModel): number {
+  const age = ageDays(asOf, p.listed_at);
+  const z =
+    age === null
+      ? odds.intercept + odds.null_coef
+      : odds.intercept + odds.age_coef * ((Math.log(age + 1) - odds.age_centre) / odds.age_scale);
+  return Math.round(sigmoid(z) * 1000) / 1000;
 }
 
 /** Per-transaction gas in dollars on a chain, by name. */
@@ -578,7 +728,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, deposit: numb
 }
 
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
-export function buildBoard(snapshot: Snapshot, curve: CurveFit, deposit = 1000, dropShare = 0.07): BoardRow[] {
+export function buildBoard(snapshot: Snapshot, curve: CurveFit, odds: OddsModel, deposit = 1000, dropShare = 0.07): BoardRow[] {
   const index = bySlug(snapshot.protocols);
   const chosen = new Map<string, SnapshotProtocol>();
   // The watchlist is the floor: every slug, even one the snapshot no longer carries (it cannot, but
@@ -595,10 +745,10 @@ export function buildBoard(snapshot: Snapshot, curve: CurveFit, deposit = 1000, 
 
   const scored = [...chosen.values()].map((p) => {
     const { implied, lo, hi } = curveValue(p.tvl_usd, curve);
-    const odds = launchOdds(p, snapshot.as_of);
+    const oddsValue = launchOdds(p, snapshot.as_of, odds);
     const age = ageDays(snapshot.as_of, p.listed_at);
-    const net = expectedNet(implied, odds, deposit, dropShare, gasTotal(p));
-    return { p, implied, lo, hi, odds, age, net, verdict: verdictOf(net) };
+    const net = expectedNet(implied, oddsValue, deposit, dropShare, gasTotal(p));
+    return { p, implied, lo, hi, odds: oddsValue, age, net, verdict: verdictOf(net) };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -680,7 +830,8 @@ function compsPoints(snapshot: Snapshot): number[][] {
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: RadarData } {
   const { curve, validation } = fitCurve(snapshot);
-  const board = buildBoard(snapshot, curve);
+  const odds = fitOdds(snapshot);
+  const board = buildBoard(snapshot, curve, odds);
   const live = liveRows(snapshot);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
   const categories = [...new Set(board.map((r) => r.category ?? 'Other'))].sort();
@@ -694,7 +845,7 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     model_version: MODEL_VERSION,
     curve,
     validation,
-    odds: ODDS,
+    odds,
     farm: FARM,
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,
