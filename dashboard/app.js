@@ -30,7 +30,6 @@
   }
   function fmtPct(n) { if (n === null || n === undefined || !isFinite(n)) return 'n/a'; return (n > 0 ? '+' : '') + n.toFixed(2) + '%'; }
   function fmtAge(d) { if (d === null || d === undefined) return 'unknown'; if (d >= 365) return (d / 365).toFixed(1) + 'y'; return Math.max(0, Math.round(d)) + 'd'; }
-  function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
 
   // ---- the model, mirrored from lib/model.ts --------------------------------
   function curveValue(tvl) {
@@ -39,11 +38,14 @@
     var spread = Math.exp(Z80 * c.sigma);
     return { implied: Math.max(1, Math.round(centre)), lo: Math.max(1, Math.round(centre / spread)), hi: Math.max(1, Math.round(centre * spread)) };
   }
+  // The launch odds, fitted: a logistic regression over all 758 protocols in the
+  // snapshot, P(records a token with a measurable market) by how long the protocol
+  // has run. Mirrors lib/model.ts exactly.
   function launchOdds(row) {
     var o = DATA.odds;
-    var age = row.age_days === null || row.age_days === undefined ? 365 : row.age_days;
-    var growth = clamp(row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d, o.growth_floor, o.growth_cap);
-    var z = o.intercept + o.size_weight * (Math.log(row.tvl_usd) - o.size_centre) + o.growth_weight * (growth / 60) + o.age_weight * (Math.min(age, o.age_days) / o.age_days);
+    var z;
+    if (row.age_days === null || row.age_days === undefined) z = o.intercept + o.null_coef;
+    else z = o.intercept + o.age_coef * ((Math.log(row.age_days + 1) - o.age_centre) / o.age_scale);
     return Math.round((1 / (1 + Math.exp(-z))) * 1000) / 1000;
   }
   function gasPerTx(chain) {
@@ -194,7 +196,7 @@
       el('div', { class: 'top-meta' },
         el('span', { text: 'Snapshot ' + DATA.as_of }),
         el('span', { text: 'DefiLlama protocol index' }),
-        el('span', { text: 'comps-2 model' }),
+        el('span', { text: 'comps-3 model' }),
         el('span', { text: 'no token on record, not no token' })
       )
     );
@@ -207,7 +209,7 @@
       kpi('Watchlist covered', DATA.watchlist_size + ' / ' + DATA.watchlist_size, 'the floor, never the ceiling'),
       kpi('Out-of-sample miss', 'x' + v.median_factor, 'median, leave-one-out'),
       kpi('80% range held', v.hold80_pct + '%', 'of traded comps, blind'),
-      kpi('Median launch odds', Math.round(medianOdds() * 100) + '%', 'stated prior, not fitted'),
+      kpi('Median launch odds', Math.round(medianOdds() * 100) + '%', 'fitted base rate · 5-fold Brier ' + DATA.odds.brier),
       kpi('Worth farming', String(DATA.farm_count) + ' FARM', DATA.marginal_count + ' marginal · ' + DATA.skip_count + ' skip')
     );
   }
@@ -404,14 +406,14 @@
     });
     return el('section', { class: 'panel pad' },
       el('h2', { text: 'Does it hold up blind?' }),
-      el('p', { html: 'Every variant below was scored leave-one-out over the <b>' + v.comps + ' traded comps</b>: each token was predicted from the other ' + (v.comps - 1) + ', so no token ever grades itself. The TVL-only curve wins, so it is the model. The 80% range spans <b>x' + v.range_factor + '</b> — wide, because comps are dispersed — and it held <b>' + v.variants[0].hold80_pct + '%</b> of comps blind, near its nominal 80%.' }),
+      el('p', { html: 'Every variant below was scored leave-one-out over the <b>' + v.comps + ' traded comps that record a market cap of at least $1M</b>: each token was predicted from the other ' + (v.comps - 1) + ', so no token ever grades itself. The TVL-only curve is the model. The 80% range spans <b>x' + v.range_factor + '</b> — still wide, because comps are dispersed — and it held <b>' + v.variants[0].hold80_pct + '%</b> of comps blind. The range uses a robust spread (median absolute deviation), so a few extreme tokens cannot inflate it the way an ordinary standard deviation did.' }),
       el('div', { class: 'table-wrap' },
         el('table', { class: 'vtable' },
           el('thead', null, el('tr', null, el('th', { text: 'Variant' }), el('th', { text: 'Median miss' }), el('th', { text: 'Mean log err' }), el('th', { text: '80% range held' }))),
           el('tbody', null, rows)
         )
       ),
-      el('p', { text: 'What was tried and rejected: a 7-day growth tilt (median miss x' + v.variants[1].median_factor + '), a growth-plus-age tilt (x' + v.variants[2].median_factor + ') and a category adjustment (x' + v.variants[3].median_factor + '). Growth and age do not predict market cap in this snapshot, so they enter the launch-odds prior instead of the value — the page says so rather than hiding it.' })
+      el('p', { text: 'What was tried and rejected: a 7-day growth tilt (median miss x' + v.variants[1].median_factor + '), a growth-plus-age tilt (x' + v.variants[2].median_factor + '), and fitting on all 128 traded comps including the 18 tokens under $1M of market cap, which are dead listings more than markets (x' + v.variants[4].median_factor + '). A category adjustment scores x' + v.variants[3].median_factor + ' blind — marginally better than the chosen x' + v.variants[0].median_factor + ' — but it is rejected anyway: its adjustments rest on 1–9 comps per category, and one prediction-market token worth 400× its TVL would multiply every Prediction Market protocol\u2019s implied value by 2.6×. A board driven by single outliers is not a ranking. Growth and age do not predict market cap in this snapshot, so they do not enter the value; age does enter the launch odds, fitted, below.' })
     );
   }
   function methodPanel() {
@@ -420,12 +422,12 @@
     return el('section', { class: 'panel pad' },
       el('h2', { text: 'How a launch is priced' }),
       el('div', { class: 'formula' },
-        'implied = exp( ' + c.intercept + ' + ' + c.slope + ' x ln(TVL) )     fitted on ' + c.comps + ' traded tokens\n' +
-        'p10, p90 = implied / x' + Math.exp(Z80 * c.sigma).toFixed(1) + ', implied x ' + Math.exp(Z80 * c.sigma).toFixed(1) + '     80% prediction interval, sigma ' + c.sigma + '\n' +
-        'odds = 1 / (1 + exp(-z)),  z = ' + o.intercept + ' + ' + o.size_weight + ' x (ln(TVL) - ' + o.size_centre + ') + ' + o.growth_weight + ' x growth/60 + ' + o.age_weight + ' x age/' + o.age_days + '\n' +
+        'implied = exp( ' + c.intercept + ' + ' + c.slope + ' x ln(TVL) )     fitted on ' + c.comps + ' traded tokens (mcap >= $1M)\n' +
+        'p10, p90 = implied / x' + Math.exp(Z80 * c.sigma).toFixed(1) + ', implied x ' + Math.exp(Z80 * c.sigma).toFixed(1) + '     80% interval, robust sigma ' + c.sigma + '\n' +
+        'odds = 1 / (1 + exp(-z)),  z = ' + o.intercept + ' + ' + o.age_coef + ' x (ln(age+1) - ' + o.age_centre + ') / ' + o.age_scale + '     (+' + o.null_coef + ' when age is unknown)\n' +
         'net = implied x odds x drop share x (deposit/1000) / ' + DATA.farm.farmer_share.toLocaleString('en-US') + ' - gas     FARM at net >= $' + DATA.farm.farm_net + ', MARGINAL above $0'
       ),
-      el('p', { text: 'Implied value is the curve centre; the range is the honest spread, never a bare number. Launch odds are a stated prior — the snapshot carries no launch outcomes to fit on, so no probability here pretends to be measured. The farm assumes a typical active farmer captures 1 in 10,000 of the drop pool at a $1,000 deposit, scaling with the deposit and capped at 1% of the pool; change the deposit or the drop share and the verdict recomputes from the same arithmetic.' }),
+      el('p', { text: 'Implied value is the curve centre; the range is the honest spread, never a bare number. Launch odds are fitted, not stated: a logistic regression over all ' + o.protocols + ' protocols in the snapshot, P(records a token with a measurable market) by how long the protocol has run — 5-fold Brier ' + o.brier + ', AUC ' + o.auc + ', against Brier ' + o.prior_brier + ' for the stated prior it replaces. TVL and 7-day growth carry no signal for whether a protocol has a token, so they are not in the odds. The odds are a base rate from the snapshot\u2019s own record, not a dated forecast: no probability here claims a launch date.' }),
       el('p', { text: 'A protocol records no token, never has none: the watchlist is DefiLlama\u2019s record, not proof. A wrapped, staked or bridged product of a token that already trades is not a launch waiting to happen.' })
     );
   }
@@ -457,11 +459,11 @@
         el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
         el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
-        el('div', null, el('span', { text: 'Launch odds (prior)' }), el('b', { class: 'num', text: Math.round(row.launch_odds * 100) + '%' })),
+        el('div', null, el('span', { text: 'Launch odds (fitted)' }), el('b', { class: 'num', text: Math.round(row.launch_odds * 100) + '%' })),
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) })),
         el('div', null, el('span', { text: '80% range' }), el('b', { class: 'num', text: fmtUsd(row.implied_lo_usd) + ' – ' + fmtUsd(row.implied_hi_usd) }))
       ),
-      el('p', { class: 'sub', text: 'Model comps-2: the page recomputes this row as ' + fmtUsd(cv.implied) + (cv.implied === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
+      el('p', { class: 'sub', text: 'Model comps-3: the page recomputes this row as ' + fmtUsd(cv.implied) + (cv.implied === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm economics' }),
@@ -505,7 +507,7 @@
     }
     shell.appendChild(el('footer', { class: 'foot' },
       el('span', { text: 'Snapshot ' + DATA.as_of + ' · ' + DATA.source }),
-      el('span', { text: 'LaunchScope, comps-2 model. Implied values are this entry\u2019s own claim, never make.fun\u2019s. A protocol records no token; it may still have one its record does not carry.' })
+      el('span', { text: 'LaunchScope, comps-3 model. Implied values are this entry\u2019s own claim, never make.fun\u2019s. A protocol records no token; it may still have one its record does not carry.' })
     ));
     app.appendChild(shell);
     app.setAttribute('aria-busy', 'false');
