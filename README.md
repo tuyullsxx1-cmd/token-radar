@@ -18,16 +18,29 @@ on every row, never one bare number.
   a measurable market) by how long the protocol has run: 5-fold Brier
   0.135, AUC 0.67, against 0.175 for the stated prior it replaces); farm
   economics netted to break-even (expected net = implied × odds × drop
-  share × (deposit/1000) / 10,000 − gas). Verdict FARM / MARGINAL / SKIP.
+  share × (deposit/1000) / 10,000 − gas, six transactions on the
+  protocol's cheapest listed chain, because that is where a farmer
+  farms). Verdict FARM at net ≥ $35 (a 3.5% expected return on a $1,000
+  deposit after gas — a stated line, not a measurement, since the net's
+  80% range spans ×58) / MARGINAL above $0 / SKIP. 16 FARM / 136
+  MARGINAL / 45 SKIP.
 - **Validation, on the page:** leave-one-out median miss ×2.79, 80% range
   held 80.0% of traded comps blind, range span ×58 (robust spread — the
   ordinary SD let a few extreme tokens inflate it to ×214). Growth, age,
   category and all-128-comps variants were tried and rejected — all five
-  are shown, with the winner highlighted.
-- **Farm plan:** 6 steps per protocol with cost and time, recomputed live
+  are shown, with the winner highlighted. The odds are shown calibrated:
+  predicted vs observed share with a token by age band, every band within
+  sampling noise (widest gap −2.6 pts on the 2–3y band); a quadratic age
+  term and 8 band dummies both score worse 5-fold, so the odds are kept
+  as fitted.
+- **Farm plan:** 7 steps per protocol with cost and time, recomputed live
   when the deposit ($1,000 / $10,000) or the drop share (3.5% / 7% / 14%)
-  changes. The full watchlist (40 / 40) is covered, plus every other
-  rankable pre-token protocol below the floor.
+  changes. The first step is the thesis — the protocol's own implied
+  value, odds, expected net and net rank — then the category's action on
+  its cheapest chain, a category-specific weekly action, the hold, the
+  claim (with the drop pool and your share), and the farm log. The full
+  watchlist (40 / 40) is covered, plus every other rankable pre-token
+  protocol below the floor.
 - **Dashboard:** dark terminal theme, KPI strip, dense sortable ranking
   table, search + category + chain + verdict filters, All / Watchlist /
   Early / Live token tabs, a scatter comps curve (110 traded dots, fitted
