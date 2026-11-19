@@ -52,11 +52,17 @@
 //                                            to capture 1 in 10,000 of the drop pool at a
 //                                            $1,000 deposit, scaling with the deposit and
 //                                            capped at 1% of the pool; stated, not measured)
-//   gas   = 6 transactions * the first chain's per-transaction gas
+//   gas   = 6 transactions * the cheapest chain's per-transaction gas: a farmer
+//           farms where the gas is cheapest, and the first chain DefiLlama lists
+//           is an ordering, not a choice. The plan names the chain it farms on.
 //   net   = gross - gas
 //
-// Verdict (at $1,000 deposit, 7% drop share): FARM when net >= $50, MARGINAL when net > $0,
-// SKIP otherwise. The dashboard recomputes the verdict live when the deposit or the drop share
+// Verdict (at $1,000 deposit, 7% drop share): FARM when net >= $35, MARGINAL when net > $0,
+// SKIP otherwise. $35 is a 3.5% expected return on the deposit after gas, and the line is a
+// stated convention, not a measurement: the net is an estimate whose 80% range spans x58 on
+// the implied value, so $35 and $50 are within the model's own noise, and the board treats
+// every clearly positive expectation as worth farming instead of pretending $50 is a measured
+// edge. The dashboard recomputes the verdict live when the deposit or the drop share
 // changes, from the same arithmetic. No protocol name is ever special-cased: one function scores
 // every row.
 
@@ -126,6 +132,9 @@ export interface OddsModel {
   auc: number;
   prior_brier: number;
   protocols: number;
+  /** Predicted vs observed share with a token, by how long the protocol has run: the
+   *  calibration the page's method panel shows, so the odds are not taken on trust. */
+  calibration: { band: string; n: number; observed: number; predicted: number }[];
 }
 
 /** The age standardisation of the odds fit: ln(age_days + 1) is centred and scaled so the
@@ -141,7 +150,7 @@ export const MIN_COMP_MCAP_USD = 1_000_000;
 export const FARM: { farmer_share: number; tx_count: number; farm_net: number; marginal_net: number } = {
   farmer_share: 10000,
   tx_count: 6,
-  farm_net: 50,
+  farm_net: 35,
   marginal_net: 0,
 };
 
@@ -542,6 +551,31 @@ export function fitOdds(snapshot: Snapshot): OddsModel {
   const priorBrier =
     snapshot.protocols.reduce((acc, p) => acc + (statedPriorOdds(p, snapshot.as_of) - (p.mcap_usd !== null && p.mcap_usd > 0 ? 1 : 0)) ** 2, 0) /
     snapshot.protocols.length;
+  // Calibration of the fitted odds, by how long the protocol has run: predicted is the fitted
+  // model's mean odds over the band, observed is the share of the band that actually records a
+  // token. Every band's gap is within sampling noise (the widest, 2-3y, is -0.026 on n=139),
+  // and a quadratic age term and 8 band dummies both score worse 5-fold (Brier 0.1352 and
+  // 0.1370 against 0.1351), so the odds are kept as fitted and the calibration is shown.
+  const ageBands: { band: string; test: (age: number | null) => boolean }[] = [
+    { band: 'age unknown', test: (age) => age === null },
+    { band: '<90d', test: (age) => age !== null && age < 90 },
+    { band: '90-180d', test: (age) => age !== null && age >= 90 && age < 180 },
+    { band: '180-365d', test: (age) => age !== null && age >= 180 && age < 365 },
+    { band: '1-2y', test: (age) => age !== null && age >= 365 && age < 730 },
+    { band: '2-3y', test: (age) => age !== null && age >= 730 && age < 1095 },
+    { band: '3-4y', test: (age) => age !== null && age >= 1095 && age < 1460 },
+    { band: '4-5y', test: (age) => age !== null && age >= 1460 && age < 1825 },
+    { band: '>5y', test: (age) => age !== null && age >= 1825 },
+  ];
+  const calibration = ageBands.map(({ band, test }) => {
+    const group = snapshot.protocols.filter((p) => test(ageDays(snapshot.as_of, p.listed_at)));
+    const observed = group.length === 0 ? 0 : group.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0).length / group.length;
+    const predicted =
+      group.length === 0
+        ? 0
+        : group.reduce((acc, p) => acc + sigmoid(oddsFeatures(p, snapshot.as_of).reduce((a, v, k) => a + v * beta[k]!, 0)), 0) / group.length;
+    return { band, n: group.length, observed: Math.round(observed * 1000) / 1000, predicted: Math.round(predicted * 1000) / 1000 };
+  });
   return {
     intercept: Math.round(beta[0]! * 1000) / 1000,
     age_centre: ODDS_AGE_CENTRE,
@@ -552,6 +586,7 @@ export function fitOdds(snapshot: Snapshot): OddsModel {
     auc: Math.round((auc / folds) * 1000) / 1000,
     prior_brier: Math.round(priorBrier * 1000) / 1000,
     protocols: snapshot.protocols.length,
+    calibration,
   };
 }
 
@@ -576,12 +611,20 @@ export function gasPerTx(chain: string): number {
   return 1;
 }
 
-/** The first chain a protocol names, or a neutral phrase. */
+/** The chain a farm runs on: the cheapest of the protocol's chains, by per-transaction gas.
+ *  A farmer farms where the gas is cheapest; the first chain DefiLlama lists is an ordering,
+ *  not a choice. The search keeps the listed order on ties (strictly cheaper wins), so the
+ *  choice is deterministic. A protocol with no listed chain farms on "its main chain". */
 export function chainOf(p: SnapshotProtocol): string {
-  return p.chains.length > 0 ? p.chains[0]! : 'its main chain';
+  if (p.chains.length === 0) return 'its main chain';
+  let cheapest = p.chains[0]!;
+  for (const chain of p.chains) {
+    if (gasPerTx(chain) < gasPerTx(cheapest)) cheapest = chain;
+  }
+  return cheapest;
 }
 
-/** The farm's gas bill: six transactions on the protocol's first chain. */
+/** The farm's gas bill: six transactions on the protocol's cheapest chain. */
 export function gasTotal(p: SnapshotProtocol): number {
   return Math.round(FARM.tx_count * gasPerTx(chainOf(p)) * 100) / 100;
 }
@@ -598,7 +641,7 @@ export function shareOfPool(depositUsd: number): number {
   return Math.min(depositUsd / 1000 / FARM.farmer_share, 0.01);
 }
 
-/** The verdict from an expected net: FARM clears $50, MARGINAL clears $0, else SKIP. */
+/** The verdict from an expected net: FARM clears $35, MARGINAL clears $0, else SKIP. */
 export function verdictOf(netUsd: number): 'FARM' | 'MARGINAL' | 'SKIP' {
   if (netUsd >= FARM.farm_net) return 'FARM';
   if (netUsd > FARM.marginal_net) return 'MARGINAL';
@@ -681,19 +724,76 @@ export function stepText(step: FarmStep): string {
   return s;
 }
 
+/** Format a dollar amount for a plan step, exactly as the dashboard does. */
+export function fmtUsd(x: number): string {
+  if (Math.abs(x) >= 1e9) return '$' + (x / 1e9).toFixed(2) + 'B';
+  if (Math.abs(x) >= 1e6) return '$' + (x / 1e6).toFixed(1) + 'M';
+  if (Math.abs(x) >= 1e3) return '$' + Math.round(x / 1e3) + 'K';
+  return '$' + Math.round(x).toLocaleString('en-US');
+}
+export function fmtUsd2(x: number): string {
+  const a = Math.abs(x);
+  if (a >= 1e6) return '$' + (x / 1e6).toFixed(2) + 'M';
+  if (a >= 1e3) return '$' + (x / 1e3).toFixed(1) + 'K';
+  return (x < 0 ? '-$' : '$') + Math.round(a);
+}
+
+/** The weekly action that keeps the farm qualifying, by category. */
+function weeklyFor(p: SnapshotProtocol, chain: string): string {
+  const c = (p.category ?? '').toLowerCase();
+  const name = p.name;
+  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return `Repay a small part of the borrow on ${name} and supply it again, so the position shows fresh activity every week.`;
+  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm')) return `Swap a small amount through the ${name} pool on ${chain} and add it back as liquidity, so the position keeps accruing fees.`;
+  if (c.includes('bridge')) return `Use the bridged funds in one app on ${chain} each week, so the route stays active without bridging back and forth.`;
+  if (c.includes('staking') || c.includes('restak')) return `Claim the staking rewards on ${name} and restake them each week, so the staked balance keeps growing.`;
+  if (c.includes('perpetual') || c.includes('derivative')) return `Open and close one small hedged position on ${name} each week, keeping the size the same so the cost stays flat.`;
+  if (c.includes('prediction')) return `Settle one market position on ${name} and open another each week, instead of leaving the same position untouched.`;
+  if (c.includes('curator') || c.includes('allocator')) return `Check the ${name} vault's allocation once a week and top it up only if the curator's strategy has changed.`;
+  if (c.includes('stable')) return `Mint or redeem a small amount of the ${name} stable asset each week, so the position shows regular use.`;
+  if (c.includes('rwa')) return `Check the yield accrual on ${name} once a week and claim it if the protocol pays it out.`;
+  if (c.includes('insurance')) return `Review the cover terms on ${name} once a week, and change the cover only if the position it protects changes.`;
+  return `Make one qualifying action on ${name} each week, such as a deposit, a borrow, a swap or a vote, so the farm does not go quiet.`;
+}
+
 /**
- * A protocol's farm plan: six steps, each an action with a cost and a time. The plan is derived
- * from the protocol's own record (category, chains, TVL, age), never from a hand-written list of
- * names. `deposit` is the position size the plan is written for; the page regenerates the same
- * steps when the deposit control changes.
+ * A protocol's farm plan: seven steps, each an action with a cost and a time. The first step
+ * is the thesis — the protocol's own numbers (implied value, odds, expected net, net rank) —
+ * so the plan says why this protocol and no other. The rest are derived from the protocol's
+ * own record (category, chains, TVL, age), never from a hand-written list of names. `deposit`
+ * is the position size the plan is written for; the page regenerates the same steps when the
+ * deposit or drop-share control changes.
  */
-export function farmSteps(p: SnapshotProtocol, age: number | null, deposit: number): FarmStep[] {
+export function farmSteps(
+  p: SnapshotProtocol,
+  age: number | null,
+  deposit: number,
+  dropShare: number,
+  implied: number,
+  odds: number,
+  net: number,
+  netRank: number,
+  total: number,
+): FarmStep[] {
   const chain = chainOf(p);
   const capital = Math.max(capitalFor(p), deposit);
   const hold = holdDaysFor(age);
   const gas = gasPerTx(chain);
   const action = actionFor(p, capital, chain);
+  const gasTotalUsd = gasTotal(p);
+  const poolShare = implied * dropShare * shareOfPool(deposit);
+  const rankPhrase = `ranked #${netRank} by expected net of ${total} rows`;
+  const thesis =
+    net >= FARM.farm_net
+      ? `Farm ${p.name} because its launch is worth ${fmtUsd(implied)} at ${Math.round(odds * 100)}% launch odds: at a ${Math.round(dropShare * 100)}% drop share and a $${deposit.toLocaleString('en-US')} deposit the expected net is ${fmtUsd2(net)} after $${gasTotalUsd.toFixed(2)} of gas — ${rankPhrase}.`
+      : net > FARM.marginal_net
+        ? `Farm ${p.name} only if you already use it: its launch is worth ${fmtUsd(implied)} at ${Math.round(odds * 100)}% launch odds, but at a ${Math.round(dropShare * 100)}% drop share and a $${deposit.toLocaleString('en-US')} deposit the expected net is only ${fmtUsd2(net)} after $${gasTotalUsd.toFixed(2)} of gas — ${rankPhrase}.`
+        : `Do not farm ${p.name} for the drop: its launch is worth ${fmtUsd(implied)} at ${Math.round(odds * 100)}% launch odds, but at a ${Math.round(dropShare * 100)}% drop share and a $${deposit.toLocaleString('en-US')} deposit the expected net is ${fmtUsd2(net)} after $${gasTotalUsd.toFixed(2)} of gas — ${rankPhrase}. The steps below are the plan if you use the protocol anyway.`;
   return [
+    {
+      text: thesis,
+      cost: 'no cost to read the plan',
+      time: '5 minutes',
+    },
     {
       text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.`,
       cost: `about $${gas} of gas for the first transaction`,
@@ -705,7 +805,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, deposit: numb
       time: '15 minutes to set up',
     },
     {
-      text: `Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.`,
+      text: weeklyFor(p, chain),
       cost: `about $${gas} of gas a week`,
       time: '10 minutes a week',
     },
@@ -715,12 +815,12 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, deposit: numb
       time: `${hold} days`,
     },
     {
-      text: `Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.`,
+      text: `Before you withdraw, open ${p.name}'s own points or rewards page and claim only from the link it publishes. The drop pool at launch is ${fmtUsd(implied * dropShare)}; your share at $${deposit.toLocaleString('en-US')} is ${fmtUsd2(poolShare)}.`,
       cost: 'no fee to check, and never pay to claim',
       time: '10 minutes',
     },
     {
-      text: `Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.`,
+      text: `Write the wallet, the dates and every ${chain} transaction in a farm log so you can repeat the position or unwind it.`,
       cost: 'nothing but the log',
       time: '5 minutes',
     },
@@ -751,6 +851,9 @@ export function buildBoard(snapshot: Snapshot, curve: CurveFit, odds: OddsModel,
     return { p, implied, lo, hi, odds: oddsValue, age, net, verdict: verdictOf(net) };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  // The net rank, for the plan's thesis step: strongest expected net first, ties by slug.
+  const byNet = [...scored].sort((a, b) => b.net - a.net || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  const netRank = new Map(byNet.map((s, i) => [s.p.slug, i + 1]));
   return scored.map((s, i) => ({
     rank: i + 1,
     slug: s.p.slug,
@@ -777,7 +880,7 @@ export function buildBoard(snapshot: Snapshot, curve: CurveFit, odds: OddsModel,
       growth_pct: s.p.change_7d === null ? 0 : Math.min(120, Math.max(-60, s.p.change_7d)),
       age_days: s.age,
     },
-    farm_steps: farmSteps(s.p, s.age, deposit).map(stepText),
+    farm_steps: farmSteps(s.p, s.age, deposit, dropShare, s.implied, s.odds, s.net, netRank.get(s.p.slug)!, scored.length).map(stepText),
   }));
 }
 
