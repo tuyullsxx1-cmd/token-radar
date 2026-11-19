@@ -37,7 +37,7 @@ button { cursor: pointer; }
 .mark { width: 12px; height: 12px; border-radius: 3px; background: var(--accent); flex: none; box-shadow: 0 0 12px var(--accent-dim); }
 .brand-name { font-family: var(--font-num); font-size: 14px; letter-spacing: 0.14em; font-weight: 700; }
 .brand-name em { font-style: normal; color: var(--accent); }
-.top-meta { display: flex; flex-wrap: wrap; gap: var(--s3); justify-content: flex-end; color: var(--muted); font-size: 13px; font-family: var(--font-num); }
+.top-meta { display: flex; flex-wrap: wrap; gap: var(--s3); justify-content: flex-end; color: var(--muted); font-size: 13px; font-family: var(--font-num); min-width: 0; }
 .top-meta span { white-space: nowrap; }
 
 .kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--s2); padding: var(--s5) 0 var(--s4); }

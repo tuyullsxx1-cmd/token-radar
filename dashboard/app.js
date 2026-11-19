@@ -56,7 +56,14 @@
     if (c === 'avalanche' || c === 'binance' || c === 'bsc' || c === 'tron' || c === 'fantom' || c === 'gnosis') return 0.3;
     return 1;
   }
-  function chainOf(p) { return p.chains && p.chains.length > 0 ? p.chains[0] : 'its main chain'; }
+  function chainOf(p) {
+    if (!p.chains || p.chains.length === 0) return 'its main chain';
+    var cheapest = p.chains[0];
+    for (var i = 1; i < p.chains.length; i++) {
+      if (gasPerTx(p.chains[i]) < gasPerTx(cheapest)) cheapest = p.chains[i];
+    }
+    return cheapest;
+  }
   function gasTotal(p) { return Math.round(DATA.farm.tx_count * gasPerTx(chainOf(p)) * 100) / 100; }
   function expectedNet(row) {
     var shareOfPool = Math.min((state.deposit / 1000) / DATA.farm.farmer_share, 0.01);
@@ -91,18 +98,53 @@
     if (s.length < 20) s = s + " Hold the position and check the protocol's own page.";
     return s;
   }
+  function weeklyFor(p, chain) {
+    var c = (p.category || '').toLowerCase();
+    var name = p.name;
+    if (c.indexOf('lend') >= 0 || c.indexOf('cdp') >= 0 || c.indexOf('collateral') >= 0) return 'Repay a small part of the borrow on ' + name + ' and supply it again, so the position shows fresh activity every week.';
+    if (c.indexOf('dex') >= 0 || c.indexOf('yield') >= 0 || c.indexOf('leveraged farm') >= 0) return 'Swap a small amount through the ' + name + ' pool on ' + chain + ' and add it back as liquidity, so the position keeps accruing fees.';
+    if (c.indexOf('bridge') >= 0) return 'Use the bridged funds in one app on ' + chain + ' each week, so the route stays active without bridging back and forth.';
+    if (c.indexOf('staking') >= 0 || c.indexOf('restak') >= 0) return 'Claim the staking rewards on ' + name + ' and restake them each week, so the staked balance keeps growing.';
+    if (c.indexOf('perpetual') >= 0 || c.indexOf('derivative') >= 0) return 'Open and close one small hedged position on ' + name + ' each week, keeping the size the same so the cost stays flat.';
+    if (c.indexOf('prediction') >= 0) return 'Settle one market position on ' + name + ' and open another each week, instead of leaving the same position untouched.';
+    if (c.indexOf('curator') >= 0 || c.indexOf('allocator') >= 0) return "Check the " + name + " vault's allocation once a week and top it up only if the curator's strategy has changed.";
+    if (c.indexOf('stable') >= 0) return 'Mint or redeem a small amount of the ' + name + ' stable asset each week, so the position shows regular use.';
+    if (c.indexOf('rwa') >= 0) return 'Check the yield accrual on ' + name + ' once a week and claim it if the protocol pays it out.';
+    if (c.indexOf('insurance') >= 0) return 'Review the cover terms on ' + name + ' once a week, and change the cover only if the position it protects changes.';
+    return 'Make one qualifying action on ' + name + ' each week, such as a deposit, a borrow, a swap or a vote, so the farm does not go quiet.';
+  }
+  function netRankOf(row) {
+    var net = expectedNet(row);
+    var rank = 1;
+    DATA.rows.forEach(function (r) {
+      var n = expectedNet(r);
+      if (n > net || (n === net && r.slug < row.slug)) rank++;
+    });
+    return rank;
+  }
   function farmSteps(p) {
     var chain = chainOf(p);
     var capital = Math.max(capitalFor(p), state.deposit);
     var hold = holdDaysFor(p.age_days);
     var gas = gasPerTx(chain);
+    var net = expectedNet(p);
+    var rankPhrase = 'ranked #' + netRankOf(p) + ' by expected net of ' + DATA.board_size + ' rows';
+    var thesis;
+    if (net >= DATA.farm.farm_net) {
+      thesis = 'Farm ' + p.name + ' because its launch is worth ' + fmtUsd(p.implied_value_usd) + ' at ' + Math.round(p.launch_odds * 100) + '% launch odds: at a ' + Math.round(state.share * 100) + '% drop share and a $' + state.deposit.toLocaleString('en-US') + ' deposit the expected net is ' + fmtUsd2(net) + ' after $' + gasTotal(p).toFixed(2) + ' of gas — ' + rankPhrase + '.';
+    } else if (net > DATA.farm.marginal_net) {
+      thesis = 'Farm ' + p.name + ' only if you already use it: its launch is worth ' + fmtUsd(p.implied_value_usd) + ' at ' + Math.round(p.launch_odds * 100) + '% launch odds, but at a ' + Math.round(state.share * 100) + '% drop share and a $' + state.deposit.toLocaleString('en-US') + ' deposit the expected net is only ' + fmtUsd2(net) + ' after $' + gasTotal(p).toFixed(2) + ' of gas — ' + rankPhrase + '.';
+    } else {
+      thesis = 'Do not farm ' + p.name + ' for the drop: its launch is worth ' + fmtUsd(p.implied_value_usd) + ' at ' + Math.round(p.launch_odds * 100) + '% launch odds, but at a ' + Math.round(state.share * 100) + '% drop share and a $' + state.deposit.toLocaleString('en-US') + ' deposit the expected net is ' + fmtUsd2(net) + ' after $' + gasTotal(p).toFixed(2) + ' of gas — ' + rankPhrase + '. The steps below are the plan if you use the protocol anyway.';
+    }
     return [
+      { text: thesis, cost: 'no cost to read the plan', time: '5 minutes' },
       { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'about $' + gas + ' of gas for the first transaction', time: '5 minutes' },
       { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + gas + ' of gas', time: '15 minutes to set up' },
-      { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.', cost: 'about $' + gas + ' of gas a week', time: '10 minutes a week' },
+      { text: weeklyFor(p, chain), cost: 'about $' + gas + ' of gas a week', time: '10 minutes a week' },
       { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
-      { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
-      { text: 'Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
+      { text: "Before you withdraw, open " + p.name + "'s own points or rewards page and claim only from the link it publishes. The drop pool at launch is " + fmtUsd(p.implied_value_usd * state.share) + '; your share at $' + state.deposit.toLocaleString('en-US') + ' is ' + fmtUsd2(poolShare(p)) + '.', cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
+      { text: 'Write the wallet, the dates and every ' + chain + ' transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
     ].map(stepText);
   }
 
@@ -428,7 +470,32 @@
         'net = implied x odds x drop share x (deposit/1000) / ' + DATA.farm.farmer_share.toLocaleString('en-US') + ' - gas     FARM at net >= $' + DATA.farm.farm_net + ', MARGINAL above $0'
       ),
       el('p', { text: 'Implied value is the curve centre; the range is the honest spread, never a bare number. Launch odds are fitted, not stated: a logistic regression over all ' + o.protocols + ' protocols in the snapshot, P(records a token with a measurable market) by how long the protocol has run — 5-fold Brier ' + o.brier + ', AUC ' + o.auc + ', against Brier ' + o.prior_brier + ' for the stated prior it replaces. TVL and 7-day growth carry no signal for whether a protocol has a token, so they are not in the odds. The odds are a base rate from the snapshot\u2019s own record, not a dated forecast: no probability here claims a launch date.' }),
+      calibrationTable(),
+      el('p', { text: 'Gas is charged on the cheapest chain the protocol lists, because that is where a farmer farms: the first chain DefiLlama lists is an ordering, not a choice, and the plan names the chain it farms on. FARM at net >= $' + DATA.farm.farm_net + ' is a 3.5% expected return on a $1,000 deposit after gas — a stated line, not a measurement: the net is an estimate whose 80% range spans x' + DATA.validation.range_factor + ' on the implied value, so $35 and $50 are within the model\u2019s own noise. Rows from $0 to $35 are MARGINAL: a positive expectation too small to act on at this deposit; raise the deposit to $10,000 and the same arithmetic promotes them.' }),
       el('p', { text: 'A protocol records no token, never has none: the watchlist is DefiLlama\u2019s record, not proof. A wrapped, staked or bridged product of a token that already trades is not a launch waiting to happen.' })
+    );
+  }
+  function calibrationTable() {
+    var cal = DATA.odds.calibration || [];
+    if (cal.length === 0) return null;
+    var rows = cal.map(function (c) {
+      var diff = Math.round((c.observed - c.predicted) * 1000) / 10;
+      return el('tr', null,
+        el('td', { text: c.band }),
+        el('td', { class: 'num', text: String(c.n) }),
+        el('td', { class: 'num', text: Math.round(c.observed * 100) + '%' }),
+        el('td', { class: 'num', text: Math.round(c.predicted * 100) + '%' }),
+        el('td', { class: 'num', text: (diff >= 0 ? '+' : '') + diff + ' pts' })
+      );
+    });
+    return el('div', null,
+      el('p', { text: 'Are the odds calibrated? Predicted odds against the share of each age band that actually records a token — every band is within sampling noise, and a quadratic age term and 8 band dummies both score worse 5-fold, so the odds are kept as fitted and the calibration is shown, not claimed.' }),
+      el('div', { class: 'table-wrap' },
+        el('table', { class: 'vtable' },
+          el('thead', null, el('tr', null, el('th', { text: 'Age band' }), el('th', { text: 'Protocols' }), el('th', { text: 'Observed with token' }), el('th', { text: 'Predicted odds' }), el('th', { text: 'Gap' }))),
+          el('tbody', null, rows)
+        )
+      )
     );
   }
   var dialog = el('dialog', { class: 'detail', id: 'detail', 'aria-labelledby': 'detail-title' });
@@ -476,7 +543,7 @@
         el('div', null, el('span', { text: 'Gas (' + DATA.farm.tx_count + ' tx on ' + chainOf(row) + ')' }), el('b', { text: '-$' + gas.toFixed(2) })),
         el('div', { class: 'net' }, el('span', { text: 'Expected net' }), el('b', { class: net >= 0 ? 'pos' : 'neg', text: fmtUsd2(net) + '  ·  ' + verdict }))
       ),
-      el('p', { class: 'sub', text: 'Change the deposit or drop share above and this math recomputes. Break-even is a farmer share of ' + (gas / Math.max(row.implied_value_usd * row.launch_odds * state.share, 0.01)).toFixed(5) + ' of the drop pool.' })
+      el('p', { class: 'sub', text: 'Change the deposit or drop share above and this math recomputes. Break-even is a farmer share of 1 in ' + Math.max(1, Math.round(Math.max(row.implied_value_usd * row.launch_odds * state.share, 0.01) / gas)).toLocaleString('en-US') + ' of the drop pool.' })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
