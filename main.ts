@@ -90,6 +90,7 @@ writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEX
 process.stdout.write(
   `launchscope: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
     `launchscope: curve log(mcap) = ${radar.curve.intercept} + ${radar.curve.slope} * log(tvl), sigma ${radar.curve.sigma} over ${radar.curve.comps} comps; LOO median miss x${radar.validation.variants[0]!.median_factor}, 80% range held ${radar.validation.variants[0]!.hold80_pct}%\n` +
+    `launchscope: odds fitted on ${radar.odds.protocols} protocols, 5-fold Brier ${radar.odds.brier}, AUC ${radar.odds.auc} (stated prior Brier ${radar.odds.prior_brier})\n` +
     `launchscope: verdicts ${radar.farm_count} FARM / ${radar.marginal_count} MARGINAL / ${radar.skip_count} SKIP\n` +
     `launchscope: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (3 files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );

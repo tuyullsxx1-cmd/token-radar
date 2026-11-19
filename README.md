@@ -9,23 +9,28 @@ Which pre-token protocol is worth farming next, and what is its launch worth?
 A static single-page dashboard over the sealed DefiLlama snapshot
 (758 protocols, 2026-11-14): 197 pre-token protocols ranked by an implied
 value fitted from the traded tokens inside the snapshot itself — a log-log
-size curve, log(mcap) = 6.97 + 0.52 · log(TVL), fit on 128 comps — with an
-80% prediction range shown on every row, never one bare number.
+size curve, log(mcap) = 9.29 + 0.42 · log(TVL), fit on the 110 comps that
+record a market cap of at least $1M — with an 80% prediction range shown
+on every row, never one bare number.
 
-- **Model (comps-2):** implied value from the curve; launch odds from a
-  stated prior (the snapshot carries no launch outcomes to fit on); farm
+- **Model (comps-3):** implied value from the curve; launch odds from a
+  logistic regression fitted on all 758 protocols (P(records a token with
+  a measurable market) by how long the protocol has run: 5-fold Brier
+  0.135, AUC 0.67, against 0.175 for the stated prior it replaces); farm
   economics netted to break-even (expected net = implied × odds × drop
   share × (deposit/1000) / 10,000 − gas). Verdict FARM / MARGINAL / SKIP.
-- **Validation, on the page:** leave-one-out median miss ×3.4, 80% range
-  held 82.8% of traded comps blind. Growth, age and category variants were
-  tried and rejected — all four are shown, with the winner highlighted.
+- **Validation, on the page:** leave-one-out median miss ×2.79, 80% range
+  held 80.0% of traded comps blind, range span ×58 (robust spread — the
+  ordinary SD let a few extreme tokens inflate it to ×214). Growth, age,
+  category and all-128-comps variants were tried and rejected — all five
+  are shown, with the winner highlighted.
 - **Farm plan:** 6 steps per protocol with cost and time, recomputed live
   when the deposit ($1,000 / $10,000) or the drop share (3.5% / 7% / 14%)
   changes. The full watchlist (40 / 40) is covered, plus every other
   rankable pre-token protocol below the floor.
 - **Dashboard:** dark terminal theme, KPI strip, dense sortable ranking
   table, search + category + chain + verdict filters, All / Watchlist /
-  Early / Live token tabs, a scatter comps curve (128 traded dots, fitted
+  Early / Live token tabs, a scatter comps curve (110 traded dots, fitted
   line, ±1.28σ band), a validation panel and a methodology note. No
   network, no backend, no external dependencies.
 
